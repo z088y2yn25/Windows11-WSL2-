@@ -1,0 +1,419 @@
+# Windows11+WSL2 部署 ROS2 完整实操：从零搭建机器人开发工程环境
+## 前言
+做机器人开发的朋友大多都听过 ROS（机器人操作系统），而新一代的 ROS 2，凭借跨平台、分布式架构，已经成为移动机器人、机械臂、自动驾驶仿真项目的主流开发框架。但 ROS 2 原生优先适配 Linux 系统，很多 Windows 用户在这里就遇到难题：
+- 不想单独装一台物理 Linux 电脑；
+- 双系统来回切换，频繁重启，调试效率极低；
+- 虚拟机性能损耗大，图形界面卡顿，GPU 直通配置复杂。
+
+而 Windows 11 自带的 WSL 2（Windows Subsystem for Linux 2），恰好解决了这个痛点。WSL2 底层是轻量化虚拟机内核，可以直接在 Windows 里面跑完整 Linux 发行版，文件互通、剪贴板共享，还支持 GPU 加速，不用折腾双系统。今天这篇实战指南，就带着大家从零开始，在 Win11 上基于 WSL2 搭建一套可以直接跑工程的 ROS2 开发环境，从开启功能、安装系统、ROS2部署，到测试仿真、常见踩坑，一次性讲清楚。
+
+> 环境说明：Windows11 专业版/家庭版，WSL2，本文以 ROS 2 Humble（长期支持版，工业项目首选）为例。
+
+## 一、前置准备：开启Windows11 WSL2必备组件
+WSL 需要开启两个系统功能：**适用于Linux的Windows子系统** 和 **虚拟机平台**。
+> ⚠️ 注意：你的电脑BIOS中需要开启CPU虚拟化（Intel VT-x / AMD-V），否则WSL2无法启动。
+
+### 方式1：PowerShell管理员命令一键开启（推荐）
+右键开始菜单，选择「Windows PowerShell(管理员)」或者「终端(管理员)」，依次执行下面命令：
+```powershell
+wsl --install
+```
+这条命令会自动开启WSL、虚拟机平台，默认下载Ubuntu发行版。执行完成后**重启电脑**，功能才会生效。
+
+### 方式2：手动开启（命令执行失败时备选）
+1. Win+R 输入 `optionalfeatures.exe` 打开「Windows功能」
+2. 勾选：适用于Linux的Windows子系统、虚拟机平台
+3. 确定，等待安装完成，重启计算机
+
+重启后，我们可以打开终端，查看WSL版本：
+```powershell
+wsl --status
+```
+确认默认版本为 WSL 2。如果不是，执行：
+```powershell
+wsl --set-default-version 2
+```
+
+## 二、安装Ubuntu发行版，基础环境初始化
+执行`wsl --list --online`可以查看可安装的Linux发行版。我们选用Ubuntu 22.04，完美适配ROS2 Humble。
+```powershell
+wsl --install -d Ubuntu-22.04
+```
+安装完成后，会弹出Ubuntu窗口，设置用户名和密码（**密码输入时屏幕不显示，正常现象**）。
+
+> 小提示：WSL里的用户名不需要和Windows一致，记住密码，后续安装软件、sudo都要用。
+
+进入Ubuntu系统后，先更新软件源，避免后续包下载失败：
+```bash
+sudo apt update && sudo apt upgrade -y
+```
+更新完成，基础Linux环境就绪。
+
+### （可选）更换国内镜像源
+国外源下载速度很慢，国内开发建议替换清华源/阿里源，备份原有源文件后替换`sources.list`，大幅提升下载速度。
+
+## 三、ROS 2 Humble 安装，配置环境变量
+ROS2官方提供Deb包安装方式，我们一步步配置软件源。
+
+### 1. 安装依赖与证书
+```bash
+sudo apt install software-properties-common curl gnupg lsb-release
+sudo curl -sSL [https://raw.githubusercontent.com/ros/rosdistro/master/ros.key](https://raw.githubusercontent.com/ros/rosdistro/master/ros.key) -o /usr/share/keyrings/ros-archive-keyring.gpg
+```
+
+### 2. 添加ROS2软件源
+```bash
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] [http://packages.ros.org/ros2/ubuntu](http://packages.ros.org/ros2/ubuntu) $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+```
+
+### 3. 再次更新源，安装ROS2
+```bash
+sudo apt update
+sudo apt install ros-humble-desktop -y
+```
+`ros-humble-desktop`是完整版，包含RViz可视化、仿真工具、示例demo；
+如果只做纯代码编译，不需要可视化，可以安装精简版：`ros-humble-ros-base`。
+
+### 4. 配置环境变量，每次打开终端自动加载ROS2
+每次新开WSL终端，都需要source ROS环境，手动输入很麻烦，写入bashrc自动加载：
+```bash
+echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
+source ~/.bashrc
+```
+> 验证：输入`printenv | grep ROS`，能看到ROS相关环境变量，说明配置成功。
+
+### 5. 安装ROS2工具包（colcon编译工具）
+colcon是ROS2的编译构建工具，必不可少：
+```bash
+sudo apt install python3-colcon-common-extensions python3-argcomplete -y
+```
+
+## 四、创建ROS2工作空间，测试编译工程
+ROS2所有自定义代码，都放在**工作空间（workspace）**，标准目录名称`colcon_ws`。
+```bash
+# 创建工作空间目录与src源码文件夹
+mkdir -p ~/colcon_ws/src
+cd ~/colcon_ws/src
+```
+src文件夹存放所有功能包（package）。我们拉取官方示例包，测试编译环境是否正常：
+```bash
+git clone [https://github.com/ros2/examples](https://github.com/ros2/examples) src/examples
+cd ~/colcon_ws
+colcon build
+```
+编译完成后，source工作空间的环境文件：
+```bash
+source install/setup.bash
+```
+
+### 运行Demo验证ROS2通信
+打开**第一个WSL终端**，运行talker（发布话题）：
+```bash
+ros2 run examples_rclcpp_minimal_publisher publisher_member_function
+```
+打开**第二个WSL终端**，运行listener（订阅话题）：
+```bash
+ros2 run examples_rclcpp_minimal_subscriber subscriber_member_function
+```
+✅ 如果listener终端持续收到打印的消息，代表ROS2话题通信跑通！整个基础开发环境可用。
+
+## 五、WSL2图形界面：RViz可视化，查看机器人模型
+很多新手疑惑：WSL2默认没有桌面，RViz、Gazebo仿真窗口怎么显示？
+Windows11内置WSLg，**无需额外安装XServer**，安装好图形依赖后，直接启动RViz：
+```bash
+rviz2
+```
+窗口会直接弹出在Windows桌面，鼠标操作、缩放模型完全正常。
+> 小技巧：WSLg支持GPU加速，只要Windows安装好NVIDIA驱动，WSL内可以直接使用CUDA，跑机器人仿真、SLAM算法都能调用显卡。
+
+测试Gazebo仿真环境：
+```bash
+sudo apt install ros-humble-gazebo-ros-pkgs
+gazebo
+```
+仿真器窗口正常弹出，即可进行机器人URDF模型加载、物理仿真。
+
+## 六、Windows与WSL文件互通，工程管理技巧
+WSL最大的优势：Windows和Linux文件互通。
+- 在WSL中访问Windows磁盘：`/mnt/c/` 对应C盘，`/mnt/d/`对应D盘
+- 在Windows资源管理器访问WSL文件：地址栏输入 `\\wsl$\Ubuntu-22.04`
+
+✅ 推荐开发习惯：
+代码放在WSL内部文件系统（`~/colcon_ws`），读写速度远高于/mnt下的Windows目录；
+工程文档、数据集可以放在Windows磁盘，两边随时查看。
+使用VS Code可以一键连接WSL：在WSL终端输入`code .`，自动打开VS Code并安装WSL插件，直接在Windows编辑器写Linux下的ROS2代码，断点调试、自动补全都支持。
+
+## 七、高频踩坑清单，避坑指南
+1. **wsl命令提示不是内部命令**：确认开启WSL功能并重启电脑；家庭版Win11同样支持WSL2。
+2. **ROS安装包下载超时**：替换Ubuntu国内源，网络不佳可以切换手机热点重试。
+3. **colcon build编译报错**：检查包依赖是否齐全；源码路径不要包含中文、空格。
+4. **rviz2无法启动，图形报错**：确认Win11版本较新，自带WSLg；旧版本Windows需要手动安装XServer。
+5. **新开终端ros2命令找不到**：确认已经把source写入`~/.bashrc`，或者手动执行`source /opt/ros/humble/setup.bash`。
+6. **WSL占用内存过高**：可以手动配置`.wslconfig`文件，限制WSL最大内存与CPU核心，避免挤占Windows资源。
+
+## 八、总结
+借助Windows11 + WSL2搭建ROS2开发环境，是机器人开发者性价比很高的方案。不用舍弃Windows生态，一边使用Office、浏览器、仿真上位机，一边在WSL中跑原生Linux下的ROS2，支持话题通信、RViz可视化、Gazebo物理仿真，还能搭配VS Code实现流畅的远程开发调试。
+
+这套环境可以直接用于：机器人算法原型开发、URDF建模、SLAM调试、移动机器人控制工程开发。搭建完成之后，你就可以继续在colcon_ws中创建自己的功能包，编写机器人节点，开启ROS2机器人开发之旅。
+
+> 后续进阶方向：WSL2中配置CUDA加速、多机通信、搭建ROS2 Docker容器环境、移植真实机器人硬件驱动调试。
+
+---
+
+https://vr.justeasy.cn/view/17922328fz15i5a8-1792328170.html
+https://vr.justeasy.cn/view/17509ta423282n10-1792328221.html
+https://vr.justeasy.cn/view/173y9q23k282f5l2-1792328263.html
+https://vr.justeasy.cn/view/gg197o926i328292-1792328304.html
+https://vr.justeasy.cn/view/1n7d9ss2328334h4-1792328345.html
+https://vr.justeasy.cn/view/d41u792m3287t375-1792328386.html
+https://vr.justeasy.cn/view/qn1r47v92k328416-1792328427.html
+https://vr.justeasy.cn/view/017923h28t45wrw8-1792328469.html
+https://vr.justeasy.cn/view/sg17759v232849t9-1792328510.html
+https://vr.justeasy.cn/view/179232si68i54kj0-1792328551.html
+https://vr.justeasy.cn/view/1q7c9a2n32u8f582-1792328593.html
+https://vr.justeasy.cn/view/179vb1123n2862b3-1792328634.html
+https://vr.justeasy.cn/view/01792w3m2f186664-1792328676.html
+https://vr.justeasy.cn/view/17392z3281e706t6-1792328717.html
+https://vr.justeasy.cn/view/e1729232h87rbx47-1792328759.html
+https://vr.justeasy.cn/view/b17gu923mb128789-1792328800.html
+https://vr.justeasy.cn/view/1yorl79232v88k31-1792328842.html
+https://vr.justeasy.cn/view/179g2328gn8ss872-1792328883.html
+https://vr.justeasy.cn/view/17w92328h9je1k04-1792328925.html
+https://vr.justeasy.cn/view/g17d9r23288g95q5-1792328966.html
+https://vr.justeasy.cn/view/17rop9w232889w96-1792329008.html
+https://vr.justeasy.cn/view/1792l32i76x903r8-1792329049.html
+https://vr.justeasy.cn/view/h17092xw32mf9079-1792329090.html
+https://vr.justeasy.cn/view/18bi729123291d20-1792329131.html
+https://vr.justeasy.cn/view/1q79ka623j29c162-1792329173.html
+https://vr.justeasy.cn/view/1792i3yw29201om3-1792329214.html
+https://vr.justeasy.cn/view/l1t7dz692i329244-1792329255.html
+https://vr.justeasy.cn/view/1k7z9g42329uj286-1792329297.html
+https://vr.justeasy.cn/view/1797i23o29zn7327-1792329338.html
+https://vr.justeasy.cn/view/ou1m7y9232979368-1792329379.html
+https://vr.justeasy.cn/view/1792ga31g2yv9409-1792329420.html
+https://vr.justeasy.cn/view/21z79232j9k24551-1792329462.html
+https://vr.justeasy.cn/view/c31792329q439xd2-1792329503.html
+https://vr.justeasy.cn/view/1t79t293llf29534-1792329545.html
+https://vr.justeasy.cn/view/12f792zlg32957d5-1792329587.html
+https://vr.justeasy.cn/view/17923n2i96l51ol7-1792329628.html
+https://vr.justeasy.cn/view/16772928m3296r58-1792329670.html
+https://vr.justeasy.cn/view/fb17932c32979500-1792329711.html
+https://vr.justeasy.cn/view/1o7924n3f2974hb1-1792329753.html
+https://vr.justeasy.cn/view/b179232812897q83-1792329795.html
+https://vr.justeasy.cn/view/q147om9232a98l25-1792329836.html
+https://vr.justeasy.cn/view/13d792372998wr67-1792329878.html
+https://vr.justeasy.cn/view/s17b4i9623299d08-1792329919.html
+https://vr.justeasy.cn/view/s17902b3pj299q49-1792329961.html
+https://vr.justeasy.cn/view/31792e3ph308x742-1792330855.html
+https://vr.justeasy.cn/view/1h79b23j3i0yw884-1792330894.html
+https://vr.justeasy.cn/view/61n7nu9233ss0923-1792330933.html
+https://vr.justeasy.cn/view/179h2j43360963o2-1792330973.html
+https://vr.justeasy.cn/view/147d492f13310031-1792331012.html
+https://vr.justeasy.cn/view/h17f923jg3a10t40-1792331051.html
+https://vr.justeasy.cn/view/p17v952w331q0f80-1792331090.html
+https://vr.justeasy.cn/view/179w127331pe11c9-1792331130.html
+https://vr.justeasy.cn/view/13gk7n923311k5a9-1792331169.html
+https://vr.justeasy.cn/view/1w79ya233s11v9g8-1792331208.html
+https://vr.justeasy.cn/view/y1b79e2q3i312r37-1792331248.html
+https://vr.justeasy.cn/view/4i17k925331127l6-1792331287.html
+https://vr.justeasy.cn/view/b1f7p92z33134x15-1792331326.html
+https://vr.justeasy.cn/view/fw1779h2331rp355-1792331365.html
+https://vr.justeasy.cn/view/3z17r9233b19f3t9-1792331951.html
+https://vr.justeasy.cn/view/a1rct79y23312980-1792331991.html
+https://vr.justeasy.cn/view/16q792332t60pt20-1792332031.html
+https://vr.justeasy.cn/view/t1792363r2y0t640-1792332071.html
+https://vr.justeasy.cn/view/17923i3e2pt10540-1792332110.html
+https://vr.justeasy.cn/view/1k7c9233219eq739-1792332149.html
+https://vr.justeasy.cn/view/a157cg92233217n8-1792332189.html
+https://vr.justeasy.cn/view/u1d86796d2332217-1792332228.html
+https://vr.justeasy.cn/view/5147c9a23k326295-1792332305.html
+https://vr.justeasy.cn/view/tr1x7n92gk332336-1792332347.html
+https://vr.justeasy.cn/view/179e9233rdzb2378-1792332390.html
+https://vr.justeasy.cn/view/1792eet3p3214d21-1792332433.html
+https://vr.justeasy.cn/view/1792g3k32v84ur64-1792332475.html
+https://vr.justeasy.cn/view/21e792wnd3o32506-1792332518.html
+https://vr.justeasy.cn/view/17923d32pp5j4xb9-1792332561.html
+https://vr.justeasy.cn/view/41792f033dx22592-1792332603.html
+https://vr.justeasy.cn/view/11x9799923329635-1792332646.html
+https://vr.justeasy.cn/view/167q692m3326lk77-1792332689.html
+https://vr.justeasy.cn/view/cy1g792m332i7120-1792332731.html
+https://vr.justeasy.cn/view/171w9237p30s2762-1792332774.html
+https://vr.justeasy.cn/view/e217923328ad7095-1792332817.html
+https://vr.justeasy.cn/view/17x92vyz33328u47-1792332859.html
+https://vr.justeasy.cn/view/o1mf79263p3u2890-1792332902.html
+https://vr.justeasy.cn/view/k1j79k2lse332933-1792332944.html
+https://vr.justeasy.cn/view/e17z3923yn32q975-1792332987.html
+https://vr.justeasy.cn/view/c1d7x92339i301d8-1792333030.html
+https://vr.justeasy.cn/view/lj1792ys33a30361-1792333072.html
+https://vr.justeasy.cn/view/171792333ix10zn3-1792333115.html
+https://vr.justeasy.cn/view/1xb799o263d33146-1792333158.html
+https://vr.justeasy.cn/view/t1w7e9oh2333k189-1792333200.html
+https://vr.justeasy.cn/view/317f9h23n353r231-1792333243.html
+https://vr.justeasy.cn/view/1h70j923s0332k74-1792333285.html
+https://vr.justeasy.cn/view/17ox56792333j316-1792333328.html
+https://vr.justeasy.cn/view/1792o3z3q3y3dv59-1792333370.html
+https://vr.justeasy.cn/view/x1s7ob923k3p3401-1792333413.html
+https://vr.justeasy.cn/view/1zzg79233344ama4-1792333455.html
+https://vr.justeasy.cn/view/177bj92v33348qh7-1792333498.html
+https://vr.justeasy.cn/view/1p7kkm92t33352v9-1792333541.html
+https://vr.justeasy.cn/view/1l179e2383ph3572-1792333583.html
+https://vr.justeasy.cn/view/1hwk7lf923336u14-1792333626.html
+https://vr.justeasy.cn/view/17992c3q3364yn57-1792333669.html
+https://vr.justeasy.cn/view/u17ng9gv2333b700-1792333711.html
+https://vr.justeasy.cn/view/179323t6337nm342-1792333754.html
+https://vr.justeasy.cn/view/4fg1u79293337a85-1792333797.html
+https://vr.justeasy.cn/view/179253393q73q828-1792333839.html
+https://vr.justeasy.cn/view/en179cy233387080-1792333882.html
+https://vr.justeasy.cn/view/1779f2u333i9a1z3-1792333925.html
+https://vr.justeasy.cn/view/17l920p33qr39856-1792333968.html
+https://vr.justeasy.cn/view/1739233s3h9bjw98-1792334010.html
+https://vr.justeasy.cn/view/17a9p233e4fc0x41-1792334053.html
+https://vr.justeasy.cn/view/1792k33340h6s8d4-1792334096.html
+https://vr.justeasy.cn/view/1m7a91m432334127-1792334138.html
+https://vr.justeasy.cn/view/0b17923f3o4w17w0-1792334181.html
+https://vr.justeasy.cn/view/t17i29923cb34212-1792334224.html
+https://vr.justeasy.cn/view/bb17e92936342j55-1792334266.html
+https://vr.justeasy.cn/view/179sb123tu342948-1792334309.html
+https://vr.justeasy.cn/view/718u7923v3w43490-1792334352.html
+https://vr.justeasy.cn/view/179233o6o4ix4383-1792334395.html
+https://vr.justeasy.cn/view/17p9v248333442g6-1792334438.html
+https://vr.justeasy.cn/view/17nk492ul334q988-1792335000.html
+https://vr.justeasy.cn/view/w13l792u0335t031-1792335043.html
+https://vr.justeasy.cn/view/17em8p9238350274-1792335086.html
+https://vr.justeasy.cn/view/17792d3352w0s117-1792335128.html
+https://vr.justeasy.cn/view/17ls9l23o345n160-1792335172.html
+https://vr.justeasy.cn/view/173fm9p24b335203-1792335215.html
+https://vr.justeasy.cn/view/sv179i23s35qb246-1792335257.html
+https://vr.justeasy.cn/view/1789rg233ji528x8-1792335300.html
+https://vr.justeasy.cn/view/17al9uh23u356331-1792335343.html
+https://vr.justeasy.cn/view/jt179826335737r4-1792335385.html
+https://vr.justeasy.cn/view/10k7962335ia4176-1792335428.html
+https://vr.justeasy.cn/view/617962335u545t69-1792335471.html
+https://vr.justeasy.cn/view/n17xs925u3365502-1792335514.html
+https://vr.justeasy.cn/view/179r23sok35o5445-1792335556.html
+https://vr.justeasy.cn/view/6179j2335585umk8-1792335599.html
+https://vr.justeasy.cn/view/187vw92py3356v31-1792335642.html
+https://vr.justeasy.cn/view/17d9f2z335e6n474-1792335685.html
+https://vr.justeasy.cn/view/q1wm792343m25717-1792335729.html
+https://vr.justeasy.cn/view/15792733k35576i0-1792335772.html
+https://vr.justeasy.cn/view/179323j35fc8nv03-1792335815.html
+https://vr.justeasy.cn/view/1d79wc5723358436-1792335858.html
+https://vr.justeasy.cn/view/179zg23p35a8c829-1792335900.html
+https://vr.justeasy.cn/view/12kf77592w335932-1792335943.html
+https://vr.justeasy.cn/view/ed8010w792335975-1792335986.html
+https://vr.justeasy.cn/view/1792336u03b9r1r8-1792336029.html
+https://vr.justeasy.cn/view/1791c2e33606lj60-1792336072.html
+https://vr.justeasy.cn/view/6179o23k3q6h10q4-1792336115.html
+https://vr.justeasy.cn/view/s179frnl233s6146-1792336158.html
+https://vr.justeasy.cn/view/17nl9x9231361809-1792336201.html
+https://vr.justeasy.cn/view/1l792zf3362xk342-1792336243.html
+https://vr.justeasy.cn/view/17922233s0622h75-1792336286.html
+https://vr.justeasy.cn/view/1792n2v3ao367318-1792336329.html
+https://vr.justeasy.cn/view/179k2336o1366wj1-1792336375.html
+https://vr.justeasy.cn/view/1z7b9p6j233640r6-1792336418.html
+https://vr.justeasy.cn/view/12az792zo3364i49-1792336460.html
+https://vr.justeasy.cn/view/b179zt323364j9g1-1792336503.html
+https://vr.justeasy.cn/view/u61m799236j36534-1792336546.html
+https://vr.justeasy.cn/view/l1792g3v36d657d7-1792336589.html
+https://vr.justeasy.cn/view/17d92393yy6p62z0-1792336632.html
+https://vr.justeasy.cn/view/179i21131e366w63-1792336675.html
+https://vr.justeasy.cn/view/1792w3s93670dzv6-1792336718.html
+https://vr.justeasy.cn/view/11h679x233a6x749-1792336761.html
+https://vr.justeasy.cn/view/1y70e92d3ov36792-1792336807.html
+https://vr.justeasy.cn/view/1d79o81233683nk9-1792336850.html
+https://vr.justeasy.cn/view/17925m3cy1368x81-1792336893.html
+https://vr.justeasy.cn/view/17is9v2t3386k925-1792336936.html
+https://vr.justeasy.cn/view/e1j79n2336uk9768-1792336979.html
+https://vr.justeasy.cn/view/17t9eo223370ch11-1792337022.html
+https://vr.justeasy.cn/view/s147r9233u370254-1792337066.html
+https://vr.justeasy.cn/view/1t79lg3w23637097-1792337108.html
+https://vr.justeasy.cn/view/u17gp92ta3337140-1792337151.html
+https://vr.justeasy.cn/view/hvv17r923037o183-1792337194.html
+https://vr.justeasy.cn/view/1737r92n33s722y5-1792337237.html
+https://vr.justeasy.cn/view/1d792qa337y3y268-1792337280.html
+https://vr.justeasy.cn/view/17g92q337yoiv311-1792337323.html
+https://vr.justeasy.cn/view/17pg9tr9233c7354-1792337366.html
+https://vr.justeasy.cn/view/a1h79q2j33s73p98-1792337409.html
+https://vr.justeasy.cn/view/1t79h23y037fe441-1792337453.html
+https://vr.justeasy.cn/view/1m7tg923378zn484-1792337496.html
+https://vr.justeasy.cn/view/417923i737d5dn28-1792337539.html
+https://vr.justeasy.cn/view/b107p92367d39791-1792339805.html
+https://vr.justeasy.cn/view/17923398zrnsle36-1792339848.html
+https://vr.justeasy.cn/view/19s7923l39857889-1792339891.html
+https://vr.justeasy.cn/view/csb178l9233996e6-1792339978.html
+https://vr.justeasy.cn/view/k1679u3234800f09-1792340021.html
+https://vr.justeasy.cn/view/6d17o91923400o52-1792340064.html
+https://vr.justeasy.cn/view/1379h234arny0095-1792340107.html
+https://vr.justeasy.cn/view/17a9b2340fc13xr8-1792340150.html
+https://vr.justeasy.cn/view/18w979p23s400182-1792340193.html
+https://vr.justeasy.cn/view/0967179k23402n25-1792340236.html
+https://vr.justeasy.cn/view/xw1vr792w34p0268-1792340280.html
+https://vr.justeasy.cn/view/1792th73j4t20312-1792340323.html
+https://vr.justeasy.cn/view/1y7c96234pvf0355-1792340366.html
+https://vr.justeasy.cn/view/17928h3k4gi20398-1792340410.html
+https://vr.justeasy.cn/view/ev1792q3410k44e1-1792340453.html
+https://vr.justeasy.cn/view/179ns2j340u4i8o4-1792340496.html
+https://vr.justeasy.cn/view/x17r92c3x40v5a27-1792340539.html
+https://vr.justeasy.cn/view/s1hm7jz923401571-1792340582.html
+https://vr.justeasy.cn/view/17923mk4ze061613-1792340625.html
+https://vr.justeasy.cn/view/17q992gl34065y16-1792340668.html
+https://vr.justeasy.cn/view/k9517s927m340699-1792340711.html
+https://vr.justeasy.cn/view/17y9q23qgl4074d2-1792340754.html
+https://vr.justeasy.cn/view/u179234n0974wl85-1792340797.html
+https://vr.justeasy.cn/view/pb1q7c692340w828-1792340840.html
+https://vr.justeasy.cn/view/17y92345087dd1h2-1792340883.html
+https://vr.justeasy.cn/view/1791234w0091k7a5-1792340926.html
+https://vr.justeasy.cn/view/t179y234m007o957-1792340969.html
+https://vr.justeasy.cn/view/187698234810r0x0-1792341012.html
+https://vr.justeasy.cn/view/179o23441u0rc4e3-1792341055.html
+https://vr.justeasy.cn/view/1792v34x10w8tek6-1792341098.html
+https://vr.justeasy.cn/view/xq17o9234f119259-1792341141.html
+https://vr.justeasy.cn/view/17v92341oe631723-1792341184.html
+https://vr.justeasy.cn/view/b1739n2384w1w215-1792341227.html
+https://vr.justeasy.cn/view/1732923sp41p2258-1792341270.html
+https://vr.justeasy.cn/view/1z71z923g4s13a01-1792341312.html
+https://vr.justeasy.cn/view/18j792cve3413404-1792341355.html
+https://vr.justeasy.cn/view/c1g792n341t3y8j7-1792341398.html
+https://vr.justeasy.cn/view/n17y92t3r4143lf0-1792341441.html
+https://vr.justeasy.cn/view/17y79232s414g7n3-1792341485.html
+https://vr.justeasy.cn/view/3179234beszh1516-1792341528.html
+https://vr.justeasy.cn/view/4179v2c3410u5760-1792341571.html
+https://vr.justeasy.cn/view/917923t34169hq02-1792341617.html
+https://vr.justeasy.cn/view/1769y2d3z4c16148-1792341659.html
+https://vr.justeasy.cn/view/v1m79234t8117691-1792341702.html
+https://vr.justeasy.cn/view/k17h92j6d34d1734-1792341745.html
+https://vr.justeasy.cn/view/1879236s6417t7l8-1792341788.html
+https://vr.justeasy.cn/view/1y719k23s4418220-1792341831.html
+https://vr.justeasy.cn/view/481p79q23n4186z3-1792341874.html
+https://vr.justeasy.cn/view/x1799234o519h026-1792341917.html
+https://vr.justeasy.cn/view/170u92b341gk9499-1792341961.html
+https://vr.justeasy.cn/view/17902ik3419uyc93-1792342004.html
+https://vr.justeasy.cn/view/17972363442dq036-1792342048.html
+https://vr.justeasy.cn/view/11p7u92342g08680-1792342091.html
+https://vr.justeasy.cn/view/1s579ce2m3w42123-1792342134.html
+https://vr.justeasy.cn/view/17ph923l4216ypn6-1792342177.html
+https://vr.justeasy.cn/view/1791f2342520rmc8-1792342220.html
+https://vr.justeasy.cn/view/1792344u22m597d1-1792342262.html
+https://vr.justeasy.cn/view/17k9z23425ga2z94-1792342306.html
+https://vr.justeasy.cn/view/e1v7923f4x239328-1792342349.html
+https://vr.justeasy.cn/view/14w7923423j43981-1792342393.html
+https://pastebin.com/wCvcnDQW
+https://pastebin.com/RdTuczZk
+https://pastebin.com/kA8xYwga
+https://pastebin.com/NJyGQF1V
+https://pastebin.com/ckktAEQg
+https://pastebin.com/WKtsnxNV
+https://pastebin.com/UJ4bEFi9
+https://pastebin.com/MCVCSFHC
+https://pastebin.com/DhWfEmtT
+https://pastebin.com/R0c3pRwt
+https://pastebin.com/t6DzGZer
+https://pastebin.com/15JBXWwa
+https://pastebin.com/Q244hJvC
+https://pastebin.com/E0GChEs7
+https://pastebin.com/TZ5fWgBS
+https://pastebin.com/J4Vm2NV4
+https://pastebin.com/kLkXYA9t
+https://pastebin.com/vb9wn5Yd
+https://pastebin.com/w9EGiQGC
+
